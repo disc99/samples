@@ -1,0 +1,19 @@
+### https://raw.github.com/github/gitignore/a5481c9e3a7ad99474107720058556d62e9419ca/Gradle.gitignore
+
+.gradle
+/build/
+
+# Ignore Gradle GUI config
+gradle-app.setting
+
+# Avoid ignoring Gradle wrapper jar file (.jar files are usually ignored)
+!gradle-wrapper.jar
+
+# Cache of project
+.gradletasknamecache
+
+# # Work around https://youtrack.jetbrains.com/issue/IDEA-116898
+# gradle/wrapper/gradle-wrapper.properties
+
+# IDEA
+.idea
