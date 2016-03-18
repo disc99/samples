@@ -36,20 +36,11 @@ class ReservationService {
         String reservationId = "99";
         String name = "tome";
 
-        Channel channel = Util.newReceiveChannel();
-        channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
-        String queueName = channel.queueDeclare().getQueue();
-        channel.queueBind(queueName, EXCHANGE_NAME, "");
-
-        channel.basicConsume(queueName, true, new DefaultConsumer(channel) {
-            @SneakyThrows
-            @Override
-            public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
+        Util.consume(body -> {
                 Util.parse(body, ReservationCompletedEvent.class)
                         .ifPresent(event -> {
                             System.out.println(event);
                         });
-            }
         });
 
 
@@ -66,23 +57,16 @@ class DbService {
     void boot() {
         Util.log("DbService#boot");
 
-        Channel channel = Util.newReceiveChannel();
-        channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
-        String queueName = channel.queueDeclare().getQueue();
-        channel.queueBind(queueName, EXCHANGE_NAME, "");
+        Util.consume(message -> {
+            Util.parse(message, ReservationExecutedEvent.class)
+                    .ifPresent(event -> {
+                        update(event);
 
-        channel.basicConsume(queueName, true, new DefaultConsumer(channel) {
-            @Override
-            public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
-                Util.parse(body, ReservationExecutedEvent.class)
-                        .ifPresent(event -> {
-                            update(event);
-
-                            Util.sendMessage(new ReservationCompletedEvent(event.reservationId, LocalDateTime.now().toString()));
+                        Util.sendMessage(new ReservationCompletedEvent(event.reservationId, LocalDateTime.now().toString()));
 
 
-                        });
-            }
+                    });
+
         });
     }
 
@@ -98,23 +82,16 @@ class NotificationService {
     void boot() {
         Util.log("NotificationService#boot");
 
-        Channel channel = Util.newReceiveChannel();
-        channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
-        String queueName = channel.queueDeclare().getQueue();
-        channel.queueBind(queueName, EXCHANGE_NAME, "");
-
-        channel.basicConsume(queueName, true, new DefaultConsumer(channel) {
-            @Override
-            public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
-                Util.parse(body, ReservationExecutedEvent.class)
-                        .ifPresent(event -> {
-                            send(event);
+        Util.consume(message -> {
+            Util.parse(message, ReservationExecutedEvent.class)
+                    .ifPresent(event -> {
+                        send(event);
 
 //                            Util.sendMessage(new ReservationNotifiedEvent(event.reservationId));
 
 
-                        });
-            }
+                    });
+
         });
     }
 
@@ -163,22 +140,8 @@ class Util {
     static final String QUEUE_NAME = "sample";
     static final String EXCHANGE_NAME = "events";
 
-//    @Deprecated
-//    @SneakyThrows
-//    static Channel newChannel() {
-//
-//        ConnectionFactory factory = new ConnectionFactory();
-//        factory.setHost("localhost");
-//        factory.setPort(5672);
-//        factory.setUsername("admin");
-//        factory.setPassword("pass");
-//        Connection connection = factory.newConnection();
-//        return connection.createChannel();
-//    }
-
     @SneakyThrows
-    static Channel newReceiveChannel() {
-
+    static void consume(java.util.function.Consumer<String> consumer) {
         ConnectionFactory factory = new ConnectionFactory();
         factory.setHost("localhost");
         factory.setPort(5672);
@@ -187,7 +150,17 @@ class Util {
         Connection connection = factory.newConnection();
         Channel channel = connection.createChannel();
 
-        return channel;
+        channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
+        String queueName = channel.queueDeclare().getQueue();
+        channel.queueBind(queueName, EXCHANGE_NAME, "");
+
+        channel.basicConsume(queueName, true, new DefaultConsumer(channel) {
+            @Override
+            public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
+                String message = new String(body, "UTF-8");
+                consumer.accept(message);
+            }
+        });
     }
 
     @SneakyThrows
@@ -202,7 +175,6 @@ class Util {
         Channel channel = connection.createChannel();
 
         channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
-
         String json = convert(obj);
         channel.basicPublish(EXCHANGE_NAME, "", null, json.getBytes());
 
@@ -215,9 +187,8 @@ class Util {
         return new ObjectMapper().writeValueAsString(obj);
     }
 
-    static <T> Optional<T> parse(byte[] body, Class<T> clazz) {
+    static <T> Optional<T> parse(String message, Class<T> clazz) {
         try {
-            String message = new String(body, "UTF-8");
             return Optional.of(new ObjectMapper().readValue(message, clazz));
         } catch (Exception e) {
             return Optional.empty();
