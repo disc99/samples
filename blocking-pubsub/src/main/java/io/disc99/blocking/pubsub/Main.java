@@ -8,16 +8,15 @@ import lombok.NoArgsConstructor;
 import lombok.SneakyThrows;
 
 import java.io.IOException;
+import java.util.Optional;
 
 import static io.disc99.blocking.pubsub.Util.EXCHANGE_NAME;
-import static io.disc99.blocking.pubsub.Util.QUEUE_NAME;
 
 public class Main {
 
     public static void main(String[] args) {
         new Thread(() -> new DbService().boot()).start();
         new Thread(() -> new NotificationService().boot()).start();
-
 
         Util.sleep(1_000);
 
@@ -29,11 +28,13 @@ class ReservationService {
     @SneakyThrows
     ReservationResponse execute(ReservationRequest request) {
 
-        String json = Util.convert(new ReservationExecutedEvent("99"));
+        String reservationId = "99";
+
+
+        String json = Util.convert(new ReservationExecutedEvent(reservationId));
 
         Channel channel = Util.newChannel();
         channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
-//        channel.queueBind(QUEUE_NAME, EXCHANGE_NAME, "");
         channel.basicPublish(EXCHANGE_NAME, "", null, json.getBytes());
 
         return null;
@@ -48,15 +49,18 @@ class DbService {
         Util.log("DbService#boot");
 
         Channel channel = Util.newChannel();
-//        channel.queueBind(QUEUE_NAME, EXCHANGE_NAME, "");
         String queueName = channel.queueDeclare().getQueue();
         channel.queueBind(queueName, EXCHANGE_NAME, "");
 
         channel.basicConsume(queueName, true, new DefaultConsumer(channel) {
             @Override
             public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
-                String message = new String(body, "UTF-8");
-                update(message);
+                Util.parse(body, ReservationExecutedEvent.class)
+                        .ifPresent(event -> {
+                            update(event);
+
+                            // TODO completed event
+                        });
             }
         });
     }
@@ -80,8 +84,13 @@ class NotificationService {
         channel.basicConsume(queueName, true, new DefaultConsumer(channel) {
             @Override
             public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
-                String message = new String(body, "UTF-8");
-                send(message);
+                Util.parse(body, ReservationExecutedEvent.class)
+                        .ifPresent(event -> {
+                            send(event);
+
+                            // TODO completed event
+
+                        });
             }
         });
     }
@@ -137,16 +146,21 @@ class Util {
         factory.setUsername("admin");
         factory.setPassword("pass");
         Connection connection = factory.newConnection();
-        Channel channel = connection.createChannel();
-//        channel.queueDeclare(QUEUE_NAME, false, false, false, null);
-//        channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
-
-        return channel;
+        return connection.createChannel();
     }
 
     @SneakyThrows
     static String convert(Object obj) {
         return new ObjectMapper().writeValueAsString(obj);
+    }
+
+    static <T> Optional<T> parse(byte[] body, Class<T> clazz) {
+        try {
+            String message = new String(body, "UTF-8");
+            return Optional.of(new ObjectMapper().readValue(message, clazz));
+        } catch (Exception e) {
+            return Optional.empty();
+        }
     }
 
     @SneakyThrows
@@ -157,5 +171,4 @@ class Util {
     static void log(String format, Object... params) {
         System.out.println(String.format(format, params));
     }
-
 }
