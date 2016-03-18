@@ -2,6 +2,7 @@ package io.disc99.blocking.pubsub;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.*;
+import io.reactivex.Single;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -11,7 +12,6 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
-import static io.disc99.blocking.pubsub.Util.EXCHANGE_NAME;
 
 
 public class Main {
@@ -36,13 +36,17 @@ class ReservationService {
         String reservationId = "99";
         String name = "tome";
 
-        Util.consume(body -> {
-                Util.parse(body, ReservationCompletedEvent.class)
-                        .ifPresent(event -> {
-                            System.out.println(event);
-                        });
-        });
+        Single<ReservationCompletedEvent> e1 = Single.create(sub ->
+                Util.consume(body ->
+                        Util.parse(body, ReservationCompletedEvent.class)
+                                .ifPresent(sub::onSuccess)));
+        e1.subscribe(System.out::println);
 
+        Single<ReservationNotifiedEvent> e2 = Single.create(sub ->
+                Util.consume(body ->
+                        Util.parse(body, ReservationNotifiedEvent.class)
+                                .ifPresent(sub::onSuccess)));
+        e2.subscribe(System.out::println);
 
         Util.sendMessage(new ReservationExecutedEvent(reservationId, name));
 
@@ -57,17 +61,11 @@ class DbService {
     void boot() {
         Util.log("DbService#boot");
 
-        Util.consume(message -> {
-            Util.parse(message, ReservationExecutedEvent.class)
-                    .ifPresent(event -> {
-                        update(event);
-
-                        Util.sendMessage(new ReservationCompletedEvent(event.reservationId, LocalDateTime.now().toString()));
-
-
-                    });
-
-        });
+        Util.consume(message -> Util.parse(message, ReservationExecutedEvent.class)
+                .ifPresent(event -> {
+                    update(event);
+                    Util.sendMessage(new ReservationCompletedEvent(event.reservationId, LocalDateTime.now().toString()));
+                }));
     }
 
     void update(Object data) {
@@ -82,17 +80,11 @@ class NotificationService {
     void boot() {
         Util.log("NotificationService#boot");
 
-        Util.consume(message -> {
-            Util.parse(message, ReservationExecutedEvent.class)
-                    .ifPresent(event -> {
-                        send(event);
-
-//                            Util.sendMessage(new ReservationNotifiedEvent(event.reservationId));
-
-
-                    });
-
-        });
+        Util.consume(message -> Util.parse(message, ReservationExecutedEvent.class)
+                .ifPresent(event -> {
+                    send(event);
+                    Util.sendMessage(new ReservationNotifiedEvent(event.reservationId, "??"));
+                }));
     }
 
     void send(Object data) {
@@ -131,13 +123,9 @@ class ReservationNotifiedEvent {
     String id;
 }
 
-
-
-
-
 // Sample support
 class Util {
-    static final String QUEUE_NAME = "sample";
+
     static final String EXCHANGE_NAME = "events";
 
     @SneakyThrows
