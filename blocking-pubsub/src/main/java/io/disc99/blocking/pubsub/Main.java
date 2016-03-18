@@ -8,18 +8,23 @@ import lombok.NoArgsConstructor;
 import lombok.SneakyThrows;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 import static io.disc99.blocking.pubsub.Util.EXCHANGE_NAME;
 
+
 public class Main {
 
     public static void main(String[] args) {
+        // Start other services
         new Thread(() -> new DbService().boot()).start();
         new Thread(() -> new NotificationService().boot()).start();
 
+        // wait
         Util.sleep(1_000);
 
+        // Execute blocking pub sub service
         new ReservationService().execute(null);
     }
 }
@@ -29,13 +34,26 @@ class ReservationService {
     ReservationResponse execute(ReservationRequest request) {
 
         String reservationId = "99";
+        String name = "tome";
 
-
-        String json = Util.convert(new ReservationExecutedEvent(reservationId));
-
-        Channel channel = Util.newChannel();
+        Channel channel = Util.newReceiveChannel();
         channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
-        channel.basicPublish(EXCHANGE_NAME, "", null, json.getBytes());
+        String queueName = channel.queueDeclare().getQueue();
+        channel.queueBind(queueName, EXCHANGE_NAME, "");
+
+        channel.basicConsume(queueName, true, new DefaultConsumer(channel) {
+            @SneakyThrows
+            @Override
+            public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
+                Util.parse(body, ReservationCompletedEvent.class)
+                        .ifPresent(event -> {
+                            System.out.println(event);
+                        });
+            }
+        });
+
+
+        Util.sendMessage(new ReservationExecutedEvent(reservationId, name));
 
         return null;
     }
@@ -48,7 +66,8 @@ class DbService {
     void boot() {
         Util.log("DbService#boot");
 
-        Channel channel = Util.newChannel();
+        Channel channel = Util.newReceiveChannel();
+        channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
         String queueName = channel.queueDeclare().getQueue();
         channel.queueBind(queueName, EXCHANGE_NAME, "");
 
@@ -59,7 +78,9 @@ class DbService {
                         .ifPresent(event -> {
                             update(event);
 
-                            // TODO completed event
+                            Util.sendMessage(new ReservationCompletedEvent(event.reservationId, LocalDateTime.now().toString()));
+
+
                         });
             }
         });
@@ -77,7 +98,8 @@ class NotificationService {
     void boot() {
         Util.log("NotificationService#boot");
 
-        Channel channel = Util.newChannel();
+        Channel channel = Util.newReceiveChannel();
+        channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
         String queueName = channel.queueDeclare().getQueue();
         channel.queueBind(queueName, EXCHANGE_NAME, "");
 
@@ -88,7 +110,8 @@ class NotificationService {
                         .ifPresent(event -> {
                             send(event);
 
-                            // TODO completed event
+//                            Util.sendMessage(new ReservationNotifiedEvent(event.reservationId));
+
 
                         });
             }
@@ -115,17 +138,20 @@ class ReservationResponse {
 @Data @AllArgsConstructor @NoArgsConstructor
 class ReservationExecutedEvent {
     String reservationId;
+    String name;
 }
 
 @Data @AllArgsConstructor @NoArgsConstructor
-class RreservationCompletedEvent {
+class ReservationCompletedEvent {
     String reservationId;
+    String time;
 }
 
 
 @Data @AllArgsConstructor @NoArgsConstructor
-class RreservationNotifiedEvent {
+class ReservationNotifiedEvent {
     String reservationId;
+    String id;
 }
 
 
@@ -137,8 +163,21 @@ class Util {
     static final String QUEUE_NAME = "sample";
     static final String EXCHANGE_NAME = "events";
 
+//    @Deprecated
+//    @SneakyThrows
+//    static Channel newChannel() {
+//
+//        ConnectionFactory factory = new ConnectionFactory();
+//        factory.setHost("localhost");
+//        factory.setPort(5672);
+//        factory.setUsername("admin");
+//        factory.setPassword("pass");
+//        Connection connection = factory.newConnection();
+//        return connection.createChannel();
+//    }
+
     @SneakyThrows
-    static Channel newChannel() {
+    static Channel newReceiveChannel() {
 
         ConnectionFactory factory = new ConnectionFactory();
         factory.setHost("localhost");
@@ -146,7 +185,29 @@ class Util {
         factory.setUsername("admin");
         factory.setPassword("pass");
         Connection connection = factory.newConnection();
-        return connection.createChannel();
+        Channel channel = connection.createChannel();
+
+        return channel;
+    }
+
+    @SneakyThrows
+    static void sendMessage(Object obj) {
+
+        ConnectionFactory factory = new ConnectionFactory();
+        factory.setHost("localhost");
+        factory.setPort(5672);
+        factory.setUsername("admin");
+        factory.setPassword("pass");
+        Connection connection = factory.newConnection();
+        Channel channel = connection.createChannel();
+
+        channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
+
+        String json = convert(obj);
+        channel.basicPublish(EXCHANGE_NAME, "", null, json.getBytes());
+
+        channel.close();
+        connection.close();
     }
 
     @SneakyThrows
