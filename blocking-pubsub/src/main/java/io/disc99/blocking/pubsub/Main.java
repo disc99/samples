@@ -40,13 +40,13 @@ class ReservationService {
                 Util.consume(body ->
                         Util.parse(body, ReservationCompletedEvent.class)
                                 .ifPresent(sub::onSuccess)));
-        e1.subscribe(System.out::println);
 
         Single<ReservationNotifiedEvent> e2 = Single.create(sub ->
                 Util.consume(body ->
                         Util.parse(body, ReservationNotifiedEvent.class)
                                 .ifPresent(sub::onSuccess)));
-        e2.subscribe(System.out::println);
+
+        Single<ReservationResponse> response = Single.zip(e1, e2, (comp, notif) -> new ReservationResponse(comp.reservationId));
 
         Util.sendMessage(new ReservationExecutedEvent(reservationId, name));
 
