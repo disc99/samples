@@ -9,9 +9,8 @@ import lombok.NoArgsConstructor;
 import lombok.SneakyThrows;
 
 import java.io.IOException;
-import java.time.LocalDateTime;
 import java.util.Optional;
-
+import java.util.UUID;
 
 
 public class Main {
@@ -25,16 +24,16 @@ public class Main {
         Util.sleep(1_000);
 
         // Execute blocking pub sub service
-        new ReservationService().execute(null);
+        ReservationRequest request = new ReservationRequest("Tom");
+        ReservationResponse response = new ReservationService().execute(request);
+        Util.log("main response: %s", response);
     }
 }
 
 class ReservationService {
     @SneakyThrows
     ReservationResponse execute(ReservationRequest request) {
-
-        String reservationId = "99";
-        String name = "tome";
+        String traceId = Util.generateTraceId();
 
         Single<ReservationCompletedEvent> e1 = Single.create(sub ->
                 Util.consume(body ->
@@ -46,11 +45,28 @@ class ReservationService {
                         Util.parse(body, ReservationNotifiedEvent.class)
                                 .ifPresent(sub::onSuccess)));
 
-        Single<ReservationResponse> response = Single.zip(e1, e2, (comp, notif) -> new ReservationResponse(comp.reservationId));
+        Single<ReservationResponse> response = Single.zip(e1, e2,
+                (comp, notify) -> new ReservationResponse(comp.reservationId, notify.notifyId));
 
-        Util.sendMessage(new ReservationExecutedEvent(reservationId, name));
 
-        return null;
+        Util.consume(body ->
+                Util.parse(body, ReservationCompletedEvent.class)
+                        .ifPresent(event -> {
+
+                        }));
+        Util.consume(body ->
+                Util.parse(body, ReservationNotifiedEvent.class)
+                        .ifPresent(event -> {
+
+                        }));
+
+
+
+        Util.sendMessage(new ReservationExecutedEvent(traceId, request.name));
+
+        // TODO
+        Util.sleep(5_000);
+        return response.blockingGet();
     }
 }
 
@@ -64,7 +80,7 @@ class DbService {
         Util.consume(message -> Util.parse(message, ReservationExecutedEvent.class)
                 .ifPresent(event -> {
                     update(event);
-                    Util.sendMessage(new ReservationCompletedEvent(event.reservationId, LocalDateTime.now().toString()));
+                    Util.sendMessage(new ReservationCompletedEvent(event.traceId, "R:"+event.traceId));
                 }));
     }
 
@@ -83,7 +99,7 @@ class NotificationService {
         Util.consume(message -> Util.parse(message, ReservationExecutedEvent.class)
                 .ifPresent(event -> {
                     send(event);
-                    Util.sendMessage(new ReservationNotifiedEvent(event.reservationId, "??"));
+                    Util.sendMessage(new ReservationNotifiedEvent(event.traceId, "N:"+event.traceId));
                 }));
     }
 
@@ -95,38 +111,39 @@ class NotificationService {
 
 @Data @AllArgsConstructor @NoArgsConstructor
 class ReservationRequest {
-    String id;
+    String name;
 }
 
 @Data @AllArgsConstructor @NoArgsConstructor
 class ReservationResponse {
-    String id;
-
+    String reservationId;
+    String notifyId;
 }
 
 @Data @AllArgsConstructor @NoArgsConstructor
 class ReservationExecutedEvent {
-    String reservationId;
+    String traceId;
     String name;
 }
 
 @Data @AllArgsConstructor @NoArgsConstructor
 class ReservationCompletedEvent {
+    String traceId;
     String reservationId;
-    String time;
 }
 
 
 @Data @AllArgsConstructor @NoArgsConstructor
 class ReservationNotifiedEvent {
-    String reservationId;
-    String id;
+    String traceId;
+    String notifyId;
 }
 
 // Sample support
 class Util {
 
     static final String EXCHANGE_NAME = "events";
+    static final ObjectMapper mapper = new ObjectMapper();
 
     @SneakyThrows
     static void consume(java.util.function.Consumer<String> consumer) {
@@ -163,21 +180,16 @@ class Util {
         Channel channel = connection.createChannel();
 
         channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
-        String json = convert(obj);
+        String json = mapper.writeValueAsString(obj);
         channel.basicPublish(EXCHANGE_NAME, "", null, json.getBytes());
 
         channel.close();
         connection.close();
     }
 
-    @SneakyThrows
-    static String convert(Object obj) {
-        return new ObjectMapper().writeValueAsString(obj);
-    }
-
     static <T> Optional<T> parse(String message, Class<T> clazz) {
         try {
-            return Optional.of(new ObjectMapper().readValue(message, clazz));
+            return Optional.of(mapper.readValue(message, clazz));
         } catch (Exception e) {
             return Optional.empty();
         }
@@ -190,5 +202,9 @@ class Util {
 
     static void log(String format, Object... params) {
         System.out.println(String.format(format, params));
+    }
+
+    static String generateTraceId() {
+        return UUID.randomUUID().toString().substring(0, 3);
     }
 }
