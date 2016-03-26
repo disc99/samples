@@ -9,24 +9,37 @@ import lombok.NoArgsConstructor;
 import lombok.SneakyThrows;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeoutException;
+
+
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 
 public class Main {
 
     public static void main(String[] args) {
-        // Start other services
+        Main main = new Main();
+        main.init();
+        main.run();
+    }
+
+    void init() {
+        // Start backend services
         new Thread(() -> new DbService().boot()).start();
         new Thread(() -> new NotificationService().boot()).start();
 
-        // wait
-        Util.sleep(1_000);
+        // Waiting to boot backend services
+        Util.sleep("Boot time",  2_000);
+    }
 
+    void run() {
         // Execute blocking pub sub service
         ReservationRequest request = new ReservationRequest("Tom");
         ReservationResponse response = new ReservationService().execute(request);
-        Util.log("main response: %s", response);
+        Util.log("Service response: %s", response);
     }
 }
 
@@ -36,37 +49,22 @@ class ReservationService {
         String traceId = Util.generateTraceId();
 
         Single<ReservationCompletedEvent> e1 = Single.create(sub ->
-                Util.consume(body ->
-                        Util.parse(body, ReservationCompletedEvent.class)
-                                .ifPresent(sub::onSuccess)));
+                Util.consume(body -> Util.parse(body, ReservationCompletedEvent.class)
+                        .filter(event -> event.traceId.equals(traceId))
+                        .ifPresent(sub::onSuccess)));
+
 
         Single<ReservationNotifiedEvent> e2 = Single.create(sub ->
-                Util.consume(body ->
-                        Util.parse(body, ReservationNotifiedEvent.class)
-                                .ifPresent(sub::onSuccess)));
+                Util.consume(body -> Util.parse(body, ReservationNotifiedEvent.class)
+                        .filter(event -> event.traceId.equals(traceId))
+                        .ifPresent(sub::onSuccess)));
 
-        Single<ReservationResponse> response = Single.zip(e1, e2,
-                (comp, notify) -> new ReservationResponse(comp.reservationId, notify.notifyId));
-
-
-        Util.consume(body ->
-                Util.parse(body, ReservationCompletedEvent.class)
-                        .ifPresent(event -> {
-
-                        }));
-        Util.consume(body ->
-                Util.parse(body, ReservationNotifiedEvent.class)
-                        .ifPresent(event -> {
-
-                        }));
-
-
-
-        Util.sendMessage(new ReservationExecutedEvent(traceId, request.name));
-
-        // TODO
-        Util.sleep(5_000);
-        return response.blockingGet();
+        // If 2 second is set timeout, a TimeoutException will be thrown.
+        // Because NotificationService takes 3 seconds to process.
+        return Single.zip(e1, e2, (comp, notify) -> new ReservationResponse(comp.reservationId, notify.notifyId))
+                .ambWith(o -> Util.sendMessage(new ReservationExecutedEvent(traceId, request.name)))
+                .timeout(4, SECONDS)
+                .blockingGet();
     }
 }
 
@@ -86,7 +84,7 @@ class DbService {
 
     void update(Object data) {
         Util.log("DbService#update: %s", data);
-        Util.sleep(1_000);
+        Util.sleep("DB update", 1_000);
     }
 }
 
@@ -105,7 +103,7 @@ class NotificationService {
 
     void send(Object data) {
         Util.log("NotificationService#send: %s", data);
-        Util.sleep(2_000);
+        Util.sleep("Notification send", 3_000);
     }
 }
 
@@ -147,12 +145,7 @@ class Util {
 
     @SneakyThrows
     static void consume(java.util.function.Consumer<String> consumer) {
-        ConnectionFactory factory = new ConnectionFactory();
-        factory.setHost("localhost");
-        factory.setPort(5672);
-        factory.setUsername("admin");
-        factory.setPassword("pass");
-        Connection connection = factory.newConnection();
+        Connection connection = newConnection();
         Channel channel = connection.createChannel();
 
         channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
@@ -166,17 +159,14 @@ class Util {
                 consumer.accept(message);
             }
         });
+        log("Start message consume: %s", consumer);
     }
 
     @SneakyThrows
     static void sendMessage(Object obj) {
+        log("Send message: %s", obj);
 
-        ConnectionFactory factory = new ConnectionFactory();
-        factory.setHost("localhost");
-        factory.setPort(5672);
-        factory.setUsername("admin");
-        factory.setPassword("pass");
-        Connection connection = factory.newConnection();
+        Connection connection = newConnection();
         Channel channel = connection.createChannel();
 
         channel.exchangeDeclare(EXCHANGE_NAME, "fanout");
@@ -185,6 +175,15 @@ class Util {
 
         channel.close();
         connection.close();
+    }
+
+    private static Connection newConnection() throws IOException, TimeoutException {
+        ConnectionFactory factory = new ConnectionFactory();
+        factory.setHost("localhost");
+        factory.setPort(5672);
+        factory.setUsername("admin");
+        factory.setPassword("pass");
+        return factory.newConnection();
     }
 
     static <T> Optional<T> parse(String message, Class<T> clazz) {
@@ -196,12 +195,14 @@ class Util {
     }
 
     @SneakyThrows
-    static void sleep(long time) {
+    static void sleep(String comment, long time) {
+        log("-------------------------- %s [SLEEP] %s ms --------------------------", comment, time);
         Thread.sleep(time);
     }
 
     static void log(String format, Object... params) {
-        System.out.println(String.format(format, params));
+        System.out.println(String.format("[%s %-30s] ", LocalDateTime.now(), Thread.currentThread())
+                + String.format(format, params));
     }
 
     static String generateTraceId() {
